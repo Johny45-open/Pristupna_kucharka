@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
 void main() {
@@ -33,11 +32,10 @@ class _KucharkaAppState extends State<KucharkaApp> {
   }
 }
 
-// 🍲 MODEL
 class Recipe {
-  final String name;
-  final List<String> ingredients;
-  final List<String> steps;
+  String name;
+  List<String> ingredients;
+  List<String> steps;
 
   Recipe({
     required this.name,
@@ -46,7 +44,54 @@ class Recipe {
   });
 }
 
-// 🏠 HOME
+/// 🔊 TTS MANAGER (QUEUE – žádné překryvy)
+class TtsManager {
+  final FlutterTts tts = FlutterTts();
+  final List<String> _queue = [];
+  bool _isSpeaking = false;
+
+  Future<void> init() async {
+    await tts.setSpeechRate(0.5);
+
+    try {
+      await tts.setLanguage("cs-CZ");
+    } catch (_) {
+      await tts.setLanguage("en-US");
+    }
+
+    tts.setCompletionHandler(() {
+      _isSpeaking = false;
+      _playNext();
+    });
+
+    tts.setCancelHandler(() {
+      _isSpeaking = false;
+      _playNext();
+    });
+  }
+
+  void speak(String text) {
+    _queue.add(text);
+    _playNext();
+  }
+
+  Future<void> _playNext() async {
+    if (_isSpeaking) return;
+    if (_queue.isEmpty) return;
+
+    _isSpeaking = true;
+    final text = _queue.removeAt(0);
+
+    await tts.stop();
+    await tts.speak(text);
+  }
+
+  void clear() {
+    _queue.clear();
+    tts.stop();
+  }
+}
+
 class HomePage extends StatefulWidget {
   final void Function(ThemeMode) onThemeChange;
 
@@ -105,9 +150,8 @@ class _HomePageState extends State<HomePage> {
         title: const Text('Moje kuchařka'),
         actions: [
           IconButton(
-            tooltip: 'Nastavení motivu',
-            onPressed: openSettings,
             icon: const Icon(Icons.color_lens),
+            onPressed: openSettings,
           )
         ],
       ),
@@ -132,11 +176,12 @@ class _HomePageState extends State<HomePage> {
               },
             ),
       floatingActionButton: FloatingActionButton(
-        tooltip: 'Přidat recept',
         onPressed: () async {
           final recipe = await Navigator.push<Recipe>(
             context,
-            MaterialPageRoute(builder: (_) => const AddRecipePage()),
+            MaterialPageRoute(
+              builder: (_) => const AddRecipePage(),
+            ),
           );
 
           if (recipe != null) addRecipe(recipe);
@@ -147,7 +192,6 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-// ➕ PŘIDÁNÍ RECEPTU
 class AddRecipePage extends StatefulWidget {
   const AddRecipePage({super.key});
 
@@ -159,20 +203,27 @@ class _AddRecipePageState extends State<AddRecipePage> {
   final name = TextEditingController();
   final ingredients = TextEditingController();
   final steps = TextEditingController();
-
-  final nameFocus = FocusNode();
-
-  List<String> splitLines(String text) =>
-      text.split('\n').where((e) => e.trim().isNotEmpty).toList();
+  
+  late TtsManager _ttsManager;
 
   @override
   void initState() {
     super.initState();
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      FocusScope.of(context).requestFocus(nameFocus);
-    });
+    _ttsManager = TtsManager();
+    _ttsManager.init(); // Inicializace TTS pro případné hlášky na této obrazovce
   }
+
+  @override
+  void dispose() {
+    name.dispose();
+    ingredients.dispose();
+    steps.dispose();
+    _ttsManager.clear(); // Vyčištění TTS při opuštění formuláře
+    super.dispose();
+  }
+
+  List<String> split(String text) =>
+      text.split('\n').where((e) => e.trim().isNotEmpty).toList();
 
   @override
   Widget build(BuildContext context) {
@@ -184,34 +235,33 @@ class _AddRecipePageState extends State<AddRecipePage> {
           children: [
             TextField(
               controller: name,
-              focusNode: nameFocus,
-              autofocus: true,
-              textInputAction: TextInputAction.next,
               decoration: const InputDecoration(labelText: 'Název'),
             ),
             TextField(
               controller: ingredients,
-              decoration: const InputDecoration(
-                labelText: 'Ingredience',
-              ),
-              maxLines: 4,
+              maxLines: 3,
+              decoration: const InputDecoration(labelText: 'Ingredience'),
             ),
             TextField(
               controller: steps,
+              maxLines: 5,
               decoration: const InputDecoration(
-                labelText: 'Postup (každý krok na nový řádek)',
+                labelText: 'Postup (1 krok na řádek)',
               ),
-              maxLines: 6,
             ),
             const SizedBox(height: 20),
             ElevatedButton(
               onPressed: () {
                 if (steps.text.trim().isEmpty) {
+                  // Aplikace chybu vizuálně zobrazí...
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content: Text('Recept musí mít aspoň jeden krok'),
                     ),
                   );
+                  
+                  // ...a nevidomému uživateli ji hned nahlas přečte!
+                  _ttsManager.speak("Chyba. Recept musí mít aspoň jeden krok");
                   return;
                 }
 
@@ -219,8 +269,8 @@ class _AddRecipePageState extends State<AddRecipePage> {
                   context,
                   Recipe(
                     name: name.text,
-                    ingredients: splitLines(ingredients.text),
-                    steps: splitLines(steps.text),
+                    ingredients: split(ingredients.text),
+                    steps: split(steps.text),
                   ),
                 );
               },
@@ -233,7 +283,6 @@ class _AddRecipePageState extends State<AddRecipePage> {
   }
 }
 
-// 👀 DETAIL RECEPTU
 class RecipeDetailPage extends StatelessWidget {
   final Recipe recipe;
 
@@ -245,7 +294,8 @@ class RecipeDetailPage extends StatelessWidget {
       appBar: AppBar(title: Text(recipe.name)),
       body: Padding(
         padding: const EdgeInsets.all(16),
-        child: ListView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
               'Ingredience',
@@ -254,7 +304,7 @@ class RecipeDetailPage extends StatelessWidget {
             ...recipe.ingredients.map((e) => Text('• $e')),
             const SizedBox(height: 20),
             ElevatedButton(
-              child: const Text('Režim vaření'),
+              child: const Text('Spustit vaření'),
               onPressed: () {
                 Navigator.push(
                   context,
@@ -277,7 +327,6 @@ class RecipeDetailPage extends StatelessWidget {
   }
 }
 
-// 🍳 REŽIM VAŘENÍ (OPRAVENÝ + BEZ PÁDŮ)
 class CookingModePage extends StatefulWidget {
   final Recipe recipe;
 
@@ -289,42 +338,52 @@ class CookingModePage extends StatefulWidget {
 
 class _CookingModePageState extends State<CookingModePage> {
   int index = 0;
-  final FlutterTts tts = FlutterTts();
+  late TtsManager ttsManager;
 
   @override
   void initState() {
     super.initState();
 
-    if (widget.recipe.steps.isEmpty) {
-      Future.microtask(() => Navigator.pop(context));
-      return;
-    }
+    ttsManager = TtsManager();
 
-    speak();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await ttsManager.init();
+
+      // Zde už kontrola prázdnosti teoreticky nemusí být, protože do CookingModePage 
+      // už uživatele nepustí detail receptu, potažmo nepůjde takový recept ani uložit.
+      // Pro jistotu zde necháváme bezpečné opuštění bez prodlevy.
+      if (widget.recipe.steps.isEmpty) {
+        Navigator.pop(context);
+        return;
+      }
+
+      ttsManager.speak("Režim vaření spuštěn");
+      ttsManager.speak(stepText());
+    });
   }
 
-  void speak() async {
-    if (widget.recipe.steps.isEmpty) return;
+  @override
+  void dispose() {
+    ttsManager.clear();
+    super.dispose();
+  }
 
-    final text =
-        'Krok ${index + 1} z ${widget.recipe.steps.length}. ${widget.recipe.steps[index]}';
-
-    await tts.setLanguage("cs-CZ");
-    await tts.setSpeechRate(0.5);
-    await tts.speak(text);
+  String stepText() {
+    final step = widget.recipe.steps[index];
+    return "Krok ${index + 1} z ${widget.recipe.steps.length}. $step";
   }
 
   void next() {
     if (index < widget.recipe.steps.length - 1) {
       setState(() => index++);
-      speak();
+      ttsManager.speak(stepText());
     }
   }
 
   void back() {
     if (index > 0) {
       setState(() => index--);
-      speak();
+      ttsManager.speak(stepText());
     }
   }
 
@@ -332,52 +391,35 @@ class _CookingModePageState extends State<CookingModePage> {
   Widget build(BuildContext context) {
     final step = widget.recipe.steps.isNotEmpty
         ? widget.recipe.steps[index]
-        : 'Žádný krok';
+        : "Žádné kroky";
 
     return Scaffold(
       appBar: AppBar(title: const Text('Režim vaření')),
-      body: Focus(
-        autofocus: true,
-        onKeyEvent: (node, event) {
-          if (event is KeyDownEvent) {
-            if (event.logicalKey == LogicalKeyboardKey.enter ||
-                event.logicalKey == LogicalKeyboardKey.space) {
-              next();
-              return KeyEventResult.handled;
-            }
-
-            if (event.logicalKey == LogicalKeyboardKey.backspace) {
-              back();
-              return KeyEventResult.handled;
-            }
-          }
-          return KeyEventResult.ignored;
-        },
-        child: Semantics(
-          liveRegion: true,
-          label:
-              'Krok ${index + 1} z ${widget.recipe.steps.length}. $step',
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Text(
-                'Krok ${index + 1} z ${widget.recipe.steps.length}\n\n$step',
-                style: const TextStyle(fontSize: 26),
-              ),
-            ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Text(
+            widget.recipe.steps.isNotEmpty
+                ? 'Krok ${index + 1} z ${widget.recipe.steps.length}\n\n$step'
+                : 'Recept nemá žádné kroky',
+            style: const TextStyle(fontSize: 26),
           ),
         ),
       ),
-      bottomNavigationBar: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            ElevatedButton(onPressed: back, child: const Text('Zpět')),
-            ElevatedButton(onPressed: next, child: const Text('Další')),
-          ],
-        ),
-      ),
+      bottomNavigationBar: widget.recipe.steps.isNotEmpty
+          ? Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  ElevatedButton(
+                      onPressed: back, child: const Text('Zpět')),
+                  ElevatedButton(
+                      onPressed: next, child: const Text('Další')),
+                ],
+              ),
+            )
+          : null,
     );
   }
 }
