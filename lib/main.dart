@@ -6,16 +6,29 @@ void main() {
   runApp(const KucharkaApp());
 }
 
-class KucharkaApp extends StatelessWidget {
+class KucharkaApp extends StatefulWidget {
   const KucharkaApp({super.key});
+
+  @override
+  State<KucharkaApp> createState() => _KucharkaAppState();
+}
+
+class _KucharkaAppState extends State<KucharkaApp> {
+  ThemeMode themeMode = ThemeMode.system;
+
+  void setTheme(ThemeMode mode) {
+    setState(() => themeMode = mode);
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Kuchařka',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(useMaterial3: true),
-      home: const HomePage(),
+      theme: ThemeData.light(useMaterial3: true),
+      darkTheme: ThemeData.dark(useMaterial3: true),
+      themeMode: themeMode,
+      home: HomePage(onThemeChange: setTheme),
     );
   }
 }
@@ -35,7 +48,9 @@ class Recipe {
 
 // 🏠 HOME
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  final void Function(ThemeMode) onThemeChange;
+
+  const HomePage({super.key, required this.onThemeChange});
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -48,10 +63,54 @@ class _HomePageState extends State<HomePage> {
     setState(() => recipes.add(recipe));
   }
 
+  void openSettings() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Motiv'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              title: const Text('Světlý'),
+              onTap: () {
+                widget.onThemeChange(ThemeMode.light);
+                Navigator.pop(context);
+              },
+            ),
+            ListTile(
+              title: const Text('Tmavý'),
+              onTap: () {
+                widget.onThemeChange(ThemeMode.dark);
+                Navigator.pop(context);
+              },
+            ),
+            ListTile(
+              title: const Text('Systémový'),
+              onTap: () {
+                widget.onThemeChange(ThemeMode.system);
+                Navigator.pop(context);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Moje kuchařka')),
+      appBar: AppBar(
+        title: const Text('Moje kuchařka'),
+        actions: [
+          IconButton(
+            tooltip: 'Nastavení motivu',
+            onPressed: openSettings,
+            icon: const Icon(Icons.color_lens),
+          )
+        ],
+      ),
       body: recipes.isEmpty
           ? const Center(child: Text('Zatím žádné recepty'))
           : ListView.builder(
@@ -101,11 +160,18 @@ class _AddRecipePageState extends State<AddRecipePage> {
   final ingredients = TextEditingController();
   final steps = TextEditingController();
 
-  List<String> splitLines(String text) {
-    return text
-        .split('\n')
-        .where((e) => e.trim().isNotEmpty)
-        .toList();
+  final nameFocus = FocusNode();
+
+  List<String> splitLines(String text) =>
+      text.split('\n').where((e) => e.trim().isNotEmpty).toList();
+
+  @override
+  void initState() {
+    super.initState();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      FocusScope.of(context).requestFocus(nameFocus);
+    });
   }
 
   @override
@@ -118,12 +184,15 @@ class _AddRecipePageState extends State<AddRecipePage> {
           children: [
             TextField(
               controller: name,
+              focusNode: nameFocus,
+              autofocus: true,
+              textInputAction: TextInputAction.next,
               decoration: const InputDecoration(labelText: 'Název'),
             ),
             TextField(
               controller: ingredients,
               decoration: const InputDecoration(
-                labelText: 'Ingredience (každá na nový řádek)',
+                labelText: 'Ingredience',
               ),
               maxLines: 4,
             ),
@@ -137,6 +206,15 @@ class _AddRecipePageState extends State<AddRecipePage> {
             const SizedBox(height: 20),
             ElevatedButton(
               onPressed: () {
+                if (steps.text.trim().isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Recept musí mít aspoň jeden krok'),
+                    ),
+                  );
+                  return;
+                }
+
                 Navigator.pop(
                   context,
                   Recipe(
@@ -169,12 +247,14 @@ class RecipeDetailPage extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         child: ListView(
           children: [
-            const Text('Ingredience',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const Text(
+              'Ingredience',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
             ...recipe.ingredients.map((e) => Text('• $e')),
             const SizedBox(height: 20),
             ElevatedButton(
-              child: const Text('Spustit režim vaření'),
+              child: const Text('Režim vaření'),
               onPressed: () {
                 Navigator.push(
                   context,
@@ -185,8 +265,10 @@ class RecipeDetailPage extends StatelessWidget {
               },
             ),
             const SizedBox(height: 20),
-            const Text('Postup',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            const Text(
+              'Postup',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
             ...recipe.steps.map((e) => Text('• $e')),
           ],
         ),
@@ -195,7 +277,7 @@ class RecipeDetailPage extends StatelessWidget {
   }
 }
 
-// 🍳 REŽIM VAŘENÍ (NVDA + TTS + klávesnice)
+// 🍳 REŽIM VAŘENÍ (OPRAVENÝ + BEZ PÁDŮ)
 class CookingModePage extends StatefulWidget {
   final Recipe recipe;
 
@@ -212,10 +294,18 @@ class _CookingModePageState extends State<CookingModePage> {
   @override
   void initState() {
     super.initState();
-    speakStep();
+
+    if (widget.recipe.steps.isEmpty) {
+      Future.microtask(() => Navigator.pop(context));
+      return;
+    }
+
+    speak();
   }
 
-  void speakStep() async {
+  void speak() async {
+    if (widget.recipe.steps.isEmpty) return;
+
     final text =
         'Krok ${index + 1} z ${widget.recipe.steps.length}. ${widget.recipe.steps[index]}';
 
@@ -227,20 +317,22 @@ class _CookingModePageState extends State<CookingModePage> {
   void next() {
     if (index < widget.recipe.steps.length - 1) {
       setState(() => index++);
-      speakStep();
+      speak();
     }
   }
 
   void back() {
     if (index > 0) {
       setState(() => index--);
-      speakStep();
+      speak();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final step = widget.recipe.steps[index];
+    final step = widget.recipe.steps.isNotEmpty
+        ? widget.recipe.steps[index]
+        : 'Žádný krok';
 
     return Scaffold(
       appBar: AppBar(title: const Text('Režim vaření')),
